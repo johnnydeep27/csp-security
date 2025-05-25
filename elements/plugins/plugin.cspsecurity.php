@@ -1,6 +1,6 @@
 <?php
 /**
- * CSP Security Plugin for MODX
+ * CSP Security Plugin for MODX - Stripe Compatible
  * 
  * Copyright (c) 2025 johnnydeep27
  * 
@@ -11,6 +11,7 @@
  * 
  * This plugin adds Content Security Policy (CSP) headers with nonces
  * to enhance website security by preventing XSS attacks.
+ * Now includes Stripe payment compatibility.
  */
 
 use MODX\Revolution\modX;
@@ -28,6 +29,18 @@ class CSPSecurityHandler
     
     /** @var array $allowedDomains */
     private $allowedDomains = [];
+
+    /** @var array $stripeDomains */
+    private $stripeDomains = [
+        'https://js.stripe.com',
+        'https://checkout.stripe.com',
+        'https://api.stripe.com',
+        'https://connect.stripe.com',
+        'https://m.stripe.com',
+        'https://dashboard.stripe.com',
+        'https://hooks.stripe.com',
+        'https://files.stripe.com'
+    ];
 
     public function __construct(modX &$modx)
     {
@@ -47,7 +60,11 @@ class CSPSecurityHandler
             'report_uri' => $this->modx->getOption('cspsecurity.report_uri', null, ''),
             'custom_domains' => $this->modx->getOption('cspsecurity.custom_domains', null, ''),
             'debug_mode' => (bool) $this->modx->getOption('cspsecurity.debug_mode', null, false),
-            'override_existing_nonces' => (bool) $this->modx->getOption('cspsecurity.override_existing_nonces', null, true)
+            'override_existing_nonces' => (bool) $this->modx->getOption('cspsecurity.override_existing_nonces', null, true),
+            'enable_stripe' => (bool) $this->modx->getOption('cspsecurity.enable_stripe', null, false),
+            'stripe_environment' => $this->modx->getOption('cspsecurity.stripe_environment', null, 'live'), // 'live' or 'test'
+            'allow_stripe_forms' => (bool) $this->modx->getOption('cspsecurity.allow_stripe_forms', null, true),
+            'allow_stripe_webhooks' => (bool) $this->modx->getOption('cspsecurity.allow_stripe_webhooks', null, false)
         ];
         
         // Parse custom domains
@@ -74,17 +91,20 @@ class CSPSecurityHandler
         }
 
         try {
+            // Check if Stripe is being used on this page
+            $hasStripe = $this->detectStripeUsage($content);
+            
             // Process the content
-            $processedContent = $this->processContent($content);
+            $processedContent = $this->processContent($content, $hasStripe);
             
             // Set CSP header
-            $this->setCSPHeader();
+            $this->setCSPHeader($hasStripe);
             
             // Update the output
             $this->modx->resource->_output = $processedContent;
             
             if ($this->config['debug_mode']) {
-                $this->modx->log(modX::LOG_LEVEL_INFO, 'CSP Security: Processed ' . count($this->nonces) . ' elements');
+                $this->modx->log(modX::LOG_LEVEL_INFO, 'CSP Security: Processed ' . count($this->nonces) . ' elements' . ($hasStripe ? ' (Stripe detected)' : ''));
             }
             
         } catch (Exception $e) {
@@ -93,17 +113,59 @@ class CSPSecurityHandler
     }
 
     /**
+     * Detect if Stripe is being used on the current page
+     * 
+     * @param string $content
+     * @return bool
+     */
+    private function detectStripeUsage($content)
+    {
+        if (!$this->config['enable_stripe']) {
+            return false;
+        }
+
+        // Check for Stripe script includes
+        $stripePatterns = [
+            '/stripe\.com\/v[0-9]+\/stripe\.js/',
+            '/js\.stripe\.com/',
+            '/checkout\.stripe\.com/',
+            '/Stripe\s*\(/i',
+            '/stripe\s*=/i',
+            '/new\s+Stripe/i',
+            '/stripe\.createToken/i',
+            '/stripe\.createPayment/i',
+            '/stripe\.confirmPayment/i',
+            '/stripe\.elements/i',
+            '/data-stripe/i'
+        ];
+
+        foreach ($stripePatterns as $pattern) {
+            if (preg_match($pattern, $content)) {
+                if ($this->config['debug_mode']) {
+                    $this->modx->log(modX::LOG_LEVEL_INFO, 'CSP Security: Stripe usage detected with pattern: ' . $pattern);
+                }
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Process HTML content to add nonces
      * 
      * @param string $content
+     * @param bool $hasStripe
      * @return string
      */
-    private function processContent($content)
+    private function processContent($content, $hasStripe = false)
     {
         // Add nonces to script tags
         $content = preg_replace_callback(
             '/<script(?=[^>]*(?:src=|>))[^>]*>/i',
-            [$this, 'addScriptNonce'],
+            function($matches) use ($hasStripe) {
+                return $this->addScriptNonce($matches, $hasStripe);
+            },
             $content
         );
 
@@ -114,16 +176,66 @@ class CSPSecurityHandler
             $content
         );
 
+        // Process Stripe-specific elements if detected
+        if ($hasStripe) {
+            $content = $this->processStripeElements($content);
+        }
+
         return $content;
+    }
+
+    /**
+     * Process Stripe-specific elements
+     * 
+     * @param string $content
+     * @return string
+     */
+    private function processStripeElements($content)
+    {
+        // Add nonces to Stripe card elements and forms
+        $content = preg_replace_callback(
+            '/<div[^>]*id=["\']?stripe-card["\']?[^>]*>/i',
+            [$this, 'addStripeNonce'],
+            $content
+        );
+
+        $content = preg_replace_callback(
+            '/<form[^>]*data-stripe[^>]*>/i',
+            [$this, 'addStripeNonce'],
+            $content
+        );
+
+        return $content;
+    }
+
+    /**
+     * Add nonce to Stripe elements
+     * 
+     * @param array $matches
+     * @return string
+     */
+    private function addStripeNonce($matches)
+    {
+        $tag = $matches[0];
+        $nonce = $this->generateSecureNonce($tag . '_stripe');
+        $this->nonces[] = $nonce;
+
+        // Add nonce attribute if it doesn't exist
+        if (!preg_match('/nonce=/', $tag)) {
+            $tag = str_replace('>', " nonce=\"{$nonce}\">", $tag);
+        }
+
+        return $tag;
     }
 
     /**
      * Add nonce to script tag
      * 
      * @param array $matches
+     * @param bool $hasStripe
      * @return string
      */
-    private function addScriptNonce($matches)
+    private function addScriptNonce($matches, $hasStripe = false)
     {
         $tag = $matches[0];
         
@@ -131,10 +243,16 @@ class CSPSecurityHandler
         $nonce = $this->generateSecureNonce($tag);
         $this->nonces[] = $nonce;
 
+        // Check if this is a Stripe script
+        $isStripeScript = $hasStripe && (
+            preg_match('/stripe\.com|js\.stripe\.com|checkout\.stripe\.com/', $tag) ||
+            preg_match('/src=["\'][^"\']*stripe[^"\']*["\']/', $tag)
+        );
+
         // Check if nonce already exists
         if (preg_match('/nonce=["\']([^"\']+)["\']/', $tag, $nonceMatches)) {
-            if ($this->config['override_existing_nonces']) {
-                // Replace existing nonce with our generated one
+            if ($this->config['override_existing_nonces'] && !$isStripeScript) {
+                // Replace existing nonce with our generated one (but not for Stripe scripts)
                 $existingNonce = $nonceMatches[0];
                 $tag = str_replace($existingNonce, "nonce=\"{$nonce}\"", $tag);
                 
@@ -144,13 +262,13 @@ class CSPSecurityHandler
             } else {
                 // Use existing nonce and add to our list for CSP header
                 $existingNonce = $nonceMatches[1];
-                $this->nonces[count($this->nonces) - 1] = $existingNonce; // Replace the generated nonce with existing one
+                $this->nonces[count($this->nonces) - 1] = $existingNonce;
                 
                 if ($this->config['debug_mode']) {
-                    $this->modx->log(modX::LOG_LEVEL_INFO, "CSP Security: Kept existing script nonce '{$existingNonce}'");
+                    $this->modx->log(modX::LOG_LEVEL_INFO, "CSP Security: Kept existing script nonce '{$existingNonce}'" . ($isStripeScript ? ' (Stripe script)' : ''));
                 }
                 
-                return $tag; // Return original tag
+                return $tag;
             }
         } else {
             // Insert nonce attribute for tags without existing nonce
@@ -187,13 +305,13 @@ class CSPSecurityHandler
             } else {
                 // Use existing nonce and add to our list for CSP header
                 $existingNonce = $nonceMatches[1];
-                $this->nonces[count($this->nonces) - 1] = $existingNonce; // Replace the generated nonce with existing one
+                $this->nonces[count($this->nonces) - 1] = $existingNonce;
                 
                 if ($this->config['debug_mode']) {
                     $this->modx->log(modX::LOG_LEVEL_INFO, "CSP Security: Kept existing style nonce '{$existingNonce}'");
                 }
                 
-                return $tag; // Return original tag
+                return $tag;
             }
         } else {
             // Insert nonce attribute for tags without existing nonce
@@ -311,9 +429,10 @@ class CSPSecurityHandler
      * Search for external sources in content
      * 
      * @param string $content
+     * @param bool $hasStripe
      * @return array
      */
-    private function findExternalSources($content)
+    private function findExternalSources($content, $hasStripe = false)
     {
         $sources = [];
         
@@ -335,6 +454,11 @@ class CSPSecurityHandler
             }
         }
 
+        // Add Stripe domains if Stripe is detected and enabled
+        if ($hasStripe && $this->config['enable_stripe']) {
+            $sources = array_merge($sources, $this->stripeDomains);
+        }
+
         // Add custom allowed domains
         $sources = array_merge($sources, $this->allowedDomains);
 
@@ -343,8 +467,10 @@ class CSPSecurityHandler
 
     /**
      * Set Content Security Policy header
+     * 
+     * @param bool $hasStripe
      */
-    private function setCSPHeader()
+    private function setCSPHeader($hasStripe = false)
     {
         if (headers_sent()) {
             $this->modx->log(modX::LOG_LEVEL_WARN, 'CSP Security: Headers already sent, cannot set CSP header');
@@ -354,7 +480,7 @@ class CSPSecurityHandler
         $content = $this->modx->resource->_output;
         
         // Get external sources
-        $externalSources = $this->findExternalSources($content);
+        $externalSources = $this->findExternalSources($content, $hasStripe);
         $sourcesList = empty($externalSources) ? '' : ' ' . implode(' ', $externalSources);
 
         // Get inline event hashes
@@ -380,11 +506,25 @@ class CSPSecurityHandler
             $nonceList = " 'nonce-" . implode("' 'nonce-", $this->nonces) . "'";
         }
 
+        // Stripe-specific adjustments
+        $stripeAdjustments = '';
+        if ($hasStripe && $this->config['enable_stripe']) {
+            // Stripe needs 'unsafe-inline' for some operations in fallback scenarios
+            // and 'unsafe-eval' for dynamic script loading
+            $stripeAdjustments = " 'unsafe-eval'";
+            
+            // If strict-dynamic is not enabled, we might need unsafe-inline as fallback
+            if (!$this->config['strict_dynamic']) {
+                $stripeAdjustments .= " 'unsafe-inline'";
+            }
+        }
+
         // Build CSP directive parts
-        $scriptSrc = "script-src 'self' https:{$sourcesList}{$nonceList}{$hashList}";
-        $styleSrc = "style-src 'self' https:{$sourcesList}{$nonceList}{$styleHashList}";
+        $scriptSrc = "script-src 'self' https:{$sourcesList}{$nonceList}{$hashList}{$stripeAdjustments}";
+        $styleSrc = "style-src 'self' 'unsafe-inline' https:{$sourcesList}{$nonceList}{$styleHashList}";
         
-        if ($this->config['strict_dynamic']) {
+        if ($this->config['strict_dynamic'] && !$hasStripe) {
+            // Only use strict-dynamic when Stripe is not present, as it can interfere
             $scriptSrc .= " 'strict-dynamic'";
         }
 
@@ -401,6 +541,21 @@ class CSPSecurityHandler
             "frame-ancestors 'self'"
         ];
 
+        // Add Stripe-specific directives
+        if ($hasStripe && $this->config['enable_stripe']) {
+            // Allow Stripe frames for checkout
+            $cspParts[] = "frame-src 'self' https://checkout.stripe.com https://js.stripe.com https://hooks.stripe.com";
+            
+            // Allow form actions to Stripe
+            if ($this->config['allow_stripe_forms']) {
+                $cspParts[] = "form-action 'self' https://checkout.stripe.com";
+            }
+            
+            // Allow connections to all Stripe endpoints
+            $stripeConnects = implode(' ', $this->stripeDomains);
+            $cspParts[6] = "connect-src 'self' https: {$stripeConnects}"; // Update connect-src
+        }
+
         // Add report URI if configured
         if (!empty($this->config['report_uri'])) {
             $reportUri = filter_var($this->config['report_uri'], FILTER_SANITIZE_URL);
@@ -415,7 +570,7 @@ class CSPSecurityHandler
         header("Content-Security-Policy: {$cspHeader}");
         
         if ($this->config['debug_mode']) {
-            $this->modx->log(modX::LOG_LEVEL_INFO, "CSP Header: {$cspHeader}");
+            $this->modx->log(modX::LOG_LEVEL_INFO, "CSP Header" . ($hasStripe ? ' (Stripe enabled)' : '') . ": {$cspHeader}");
         }
     }
 
