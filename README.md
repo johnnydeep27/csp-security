@@ -30,16 +30,16 @@ A CSP header generator that automatically generates secure nonce on style, and s
     - Preserves existing Stripe script nonces
     - Adds debug logging for Stripe detection
 
-# How to Use:
+## How to Use:
 1. Set the system settings in MODX:
-    cspsecurity.enable_stripe = 1
-    cspsecurity.allow_stripe_forms = 1
+    `cspsecurity.enable_stripe = 1`
+    `cspsecurity.allow_stripe_forms = 1`
 2. The plugin will automatically:
     - Detect when Stripe is used on a page
     - Apply appropriate CSP headers
     - Allow all necessary Stripe functionality
 3. For debugging, enable:
-    cspsecurity.debug_mode = 1
+    `cspsecurity.debug_mode = 1`
 
 ## License
 CSP Security is released under the MIT License. See the LICENSE file for details.
