@@ -7,7 +7,7 @@ A CSP header generator that automatically generates secure nonce on style, and s
 - report-uri accepts full URL, absolute path, relative path, path with query
 - Add custom domains
 
-## New Features on version 1.1.0
+## New Features on version 1.1.0-beta
 - Stripe Payment Compatibility 
 - Automatic Stripe Detection
     - Detects Stripe usage on pages by scanning for Stripe scripts, API calls, and elements
