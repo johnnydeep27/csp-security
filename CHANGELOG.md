@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.2.0 - 2026-02-16
+
+### Security
+
+- **Nonce generation hardened** — Removed `mt_rand()` and `microtime()` from `generateSecureNonce()`; now uses only `bin2hex(random_bytes(16))` for cryptographically secure output
+- **Removed automatic `'unsafe-eval'` and `'unsafe-inline'` for Stripe** — Modern Stripe.js (v3+) works with nonces alone; these are no longer forced into the CSP when Stripe is detected
+- **`style-src` no longer uses `'unsafe-inline'` by default** — Uses nonces and SHA-256 hashes instead; opt back in with the new `allow_unsafe_inline_styles` setting
+
+### New Features
+
+- New System Settings
+    - `allow_unsafe_eval` — Explicitly opt in to `'unsafe-eval'` in `script-src` when required
+    - `allow_unsafe_inline_styles` — Explicitly opt in to `'unsafe-inline'` in `style-src` when required
+    - `object_src` — Set `object-src` directive value (`'none'` or `'self'`); defaults to `'none'`
+- **Font domain detection** — New `$commonFontDomains` list and `getFontDomains()` method; `font-src` now uses specific detected domains instead of a blanket `https:`
+- **Centralised domain collection** — New `getAllAllowedDomains()` method; custom domains now propagate to `default-src`, `img-src`, `connect-src`, `frame-src`, and `form-action`
+- **Wildcard subdomain support** — `isValidDomain()` now accepts `*.example.com` patterns in `custom_domains`
+- **`child-src` directive** — Added for older-browser Stripe iframe compatibility
+
+### Improvements
+
+- **Inline event pattern expanded** — Now also hashes `oninvalid` and `oninput` handlers
+- **`base-uri` tightened** — Removed `data:` and external sources; now `'self'` only
+- **CSP header length validation** — Logs a warning when the header exceeds 8 192 characters
+- **Double-space cleanup** — All CSP directive parts are trimmed before joining
+- **Error handling improved** — `process()` catches both `Exception` and `Error`; `setCSPHeader()` wrapped in try/catch to prevent 502 errors
+- **Debug logging enhanced** — Logs loaded custom domains on startup and CSP header length on each request
+- **Style attribute hashing disabled** — Inline `style="…"` attribute hashing removed to reduce header bloat; `<style>` tag hashing retained
+
 ## 1.1.0 - 2025-05-25
 
 ### New Features

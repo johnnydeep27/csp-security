@@ -42,6 +42,17 @@ class CSPSecurityHandler
         'https://files.stripe.com'
     ];
 
+    /** @var array $commonFontDomains */
+    private $commonFontDomains = [
+        'https://fonts.googleapis.com',
+        'https://fonts.gstatic.com',
+        'https://cdn.jsdelivr.net',
+        'https://cdnjs.cloudflare.com',
+        'https://maxcdn.bootstrapcdn.com',
+        'https://stackpath.bootstrapcdn.com',
+        'https://unpkg.com'
+    ];
+
     public function __construct(modX &$modx)
     {
         $this->modx =& $modx;
@@ -64,7 +75,10 @@ class CSPSecurityHandler
             'enable_stripe' => (bool) $this->modx->getOption('cspsecurity.enable_stripe', null, false),
             'stripe_environment' => $this->modx->getOption('cspsecurity.stripe_environment', null, 'live'), // 'live' or 'test'
             'allow_stripe_forms' => (bool) $this->modx->getOption('cspsecurity.allow_stripe_forms', null, true),
-            'allow_stripe_webhooks' => (bool) $this->modx->getOption('cspsecurity.allow_stripe_webhooks', null, false)
+            'allow_stripe_webhooks' => (bool) $this->modx->getOption('cspsecurity.allow_stripe_webhooks', null, false),
+            'allow_unsafe_eval' => (bool) $this->modx->getOption('cspsecurity.allow_unsafe_eval', null, false),
+            'allow_unsafe_inline_styles' => (bool) $this->modx->getOption('cspsecurity.allow_unsafe_inline_styles', null, false),
+            'object_src' => $this->modx->getOption('cspsecurity.object_src', null, 'none') // 'none' or 'self'
         ];
         
         // Parse custom domains
@@ -73,6 +87,10 @@ class CSPSecurityHandler
             $this->allowedDomains = array_filter($domains, function($domain) {
                 return !empty($domain) && $this->isValidDomain($domain);
             });
+            
+            if ($this->config['debug_mode']) {
+                $this->modx->log(modX::LOG_LEVEL_INFO, 'CSP Security: Loaded custom domains: ' . implode(', ', $this->allowedDomains));
+            }
         }
     }
 
@@ -97,7 +115,7 @@ class CSPSecurityHandler
             // Process the content
             $processedContent = $this->processContent($content, $hasStripe);
             
-            // Set CSP header
+            // Set CSP header (with error handling to prevent 502)
             $this->setCSPHeader($hasStripe);
             
             // Update the output
@@ -109,6 +127,10 @@ class CSPSecurityHandler
             
         } catch (Exception $e) {
             $this->modx->log(modX::LOG_LEVEL_ERROR, 'CSP Security Error: ' . $e->getMessage());
+            // Continue without CSP to prevent 502 errors
+        } catch (Error $e) {
+            $this->modx->log(modX::LOG_LEVEL_ERROR, 'CSP Security Fatal Error: ' . $e->getMessage());
+            // Continue without CSP to prevent 502 errors
         }
     }
 
@@ -350,16 +372,8 @@ class CSPSecurityHandler
      */
     private function generateSecureNonce($context = '')
     {
-        // Use cryptographically secure random bytes
-        $randomBytes = bin2hex(random_bytes(16));
-        
-        // Add context-specific hash for uniqueness
-        $contextHash = hash('sha256', $context . microtime(true) . mt_rand());
-        
-        // Combine and create final nonce
-        $nonce = substr(hash('sha256', $randomBytes . $contextHash), 0, 32);
-        
-        return $nonce;
+        // Use only cryptographically secure random bytes — no mt_rand() or microtime()
+        return bin2hex(random_bytes(16));
     }
 
     /**
@@ -373,7 +387,7 @@ class CSPSecurityHandler
         $hashes = [];
         
         // Pattern to match common inline event handlers
-        $eventPattern = '/on(?:load|click|change|submit|focus|blur|keyup|keydown|mouseover|mouseout)="([^"]+)"/i';
+        $eventPattern = '/on(?:load|click|change|submit|focus|blur|keyup|keydown|mouseover|mouseout|invalid|input)="([^"]+)"/i';
         
         if (preg_match_all($eventPattern, $content, $matches, PREG_SET_ORDER)) {
             foreach ($matches as $match) {
@@ -413,14 +427,14 @@ class CSPSecurityHandler
         }
         
         // Match style attributes
-        if (preg_match_all('/style="([^"]+)"/i', $content, $matches)) {
-            foreach ($matches[1] as $styleContent) {
-                if (!empty($styleContent)) {
-                    $hash = base64_encode(hash('sha256', trim($styleContent), true));
-                    $hashes[] = $hash;
-                }
-            }
-        }
+        // if (preg_match_all('/style="([^"]+)"/i', $content, $matches)) {
+        //     foreach ($matches[1] as $styleContent) {
+        //         if (!empty($styleContent)) {
+        //             $hash = base64_encode(hash('sha256', trim($styleContent), true));
+        //             $hashes[] = $hash;
+        //         }
+        //     }
+        // }
         
         return array_unique($hashes);
     }
@@ -466,6 +480,80 @@ class CSPSecurityHandler
     }
 
     /**
+     * Get font-specific domains from content
+     * 
+     * @param string $content
+     * @return array
+     */
+    private function getFontDomains($content)
+    {
+        $fontDomains = [];
+        
+        // Check for common font CDNs in content
+        foreach ($this->commonFontDomains as $domain) {
+            if (strpos($content, $domain) !== false) {
+                $fontDomains[] = $domain;
+            }
+        }
+        
+        // Parse link tags for font resources
+        if (preg_match_all('/<link[^>]*href=["\']([^"\']*font[^"\']*)["\'][^>]*>/i', $content, $matches)) {
+            foreach ($matches[1] as $fontUrl) {
+                $parsedUrl = parse_url($fontUrl);
+                if ($parsedUrl && isset($parsedUrl['scheme']) && isset($parsedUrl['host'])) {
+                    $fontDomain = $parsedUrl['scheme'] . '://' . $parsedUrl['host'];
+                    if (!in_array($fontDomain, $fontDomains)) {
+                        $fontDomains[] = $fontDomain;
+                    }
+                }
+            }
+        }
+        
+        // Parse @font-face rules in CSS
+        if (preg_match_all('/@font-face[^}]*url\(["\']?([^"\']*)["\']?\)/i', $content, $matches)) {
+            foreach ($matches[1] as $fontUrl) {
+                $parsedUrl = parse_url($fontUrl);
+                if ($parsedUrl && isset($parsedUrl['scheme']) && isset($parsedUrl['host'])) {
+                    $fontDomain = $parsedUrl['scheme'] . '://' . $parsedUrl['host'];
+                    if (!in_array($fontDomain, $fontDomains)) {
+                        $fontDomains[] = $fontDomain;
+                    }
+                }
+            }
+        }
+        
+        // Include custom domains that might serve fonts
+        foreach ($this->allowedDomains as $domain) {
+            if (!in_array($domain, $fontDomains)) {
+                $fontDomains[] = $domain;
+            }
+        }
+        
+        return array_unique($fontDomains);
+    }
+
+    /**
+     * Get all allowed domains (external sources + custom domains)
+     * 
+     * @param string $content
+     * @param bool $hasStripe
+     * @return array
+     */
+    private function getAllAllowedDomains($content, $hasStripe = false)
+    {
+        $allDomains = [];
+        
+        // Get external sources found in content
+        $externalSources = $this->findExternalSources($content, $hasStripe);
+        $allDomains = array_merge($allDomains, $externalSources);
+        
+        // Always include custom domains
+        $allDomains = array_merge($allDomains, $this->allowedDomains);
+        
+        return array_unique($allDomains);
+    }
+
+    /**
      * Set Content Security Policy header
      * 
      * @param bool $hasStripe
@@ -477,100 +565,133 @@ class CSPSecurityHandler
             return;
         }
 
-        $content = $this->modx->resource->_output;
-        
-        // Get external sources
-        $externalSources = $this->findExternalSources($content, $hasStripe);
-        $sourcesList = empty($externalSources) ? '' : ' ' . implode(' ', $externalSources);
-
-        // Get inline event hashes
-        $inlineHashes = $this->findInlineEvents($content);
-        $hashList = '';
-        if (!empty($inlineHashes)) {
-            $hashList = " 'sha256-" . implode("' 'sha256-", $inlineHashes) . "'";
-            if ($this->config['unsafe_hashes']) {
-                $hashList = " 'unsafe-hashes'" . $hashList;
-            }
-        }
-
-        // Get inline style hashes
-        $styleHashes = $this->findInlineStyles($content);
-        $styleHashList = '';
-        if (!empty($styleHashes)) {
-            $styleHashList = " 'sha256-" . implode("' 'sha256-", $styleHashes) . "'";
-        }
-
-        // Build nonce list
-        $nonceList = '';
-        if (!empty($this->nonces)) {
-            $nonceList = " 'nonce-" . implode("' 'nonce-", $this->nonces) . "'";
-        }
-
-        // Stripe-specific adjustments
-        $stripeAdjustments = '';
-        if ($hasStripe && $this->config['enable_stripe']) {
-            // Stripe needs 'unsafe-inline' for some operations in fallback scenarios
-            // and 'unsafe-eval' for dynamic script loading
-            $stripeAdjustments = " 'unsafe-eval'";
+        try {
+            $content = $this->modx->resource->_output;
             
-            // If strict-dynamic is not enabled, we might need unsafe-inline as fallback
-            if (!$this->config['strict_dynamic']) {
-                $stripeAdjustments .= " 'unsafe-inline'";
+            // Get all allowed domains (includes custom domains)
+            $allAllowedDomains = $this->getAllAllowedDomains($content, $hasStripe);
+            $allDomainsString = empty($allAllowedDomains) ? '' : ' ' . implode(' ', $allAllowedDomains);
+
+            // Get font-specific domains (now includes custom domains)
+            $fontDomains = $this->getFontDomains($content);
+            $fontDomainsString = empty($fontDomains) ? '' : ' ' . implode(' ', $fontDomains);
+
+            // Get inline event hashes
+            $inlineHashes = $this->findInlineEvents($content);
+            $hashList = '';
+            if (!empty($inlineHashes)) {
+                $hashList = " 'sha256-" . implode("' 'sha256-", $inlineHashes) . "'";
+                if ($this->config['unsafe_hashes']) {
+                    $hashList = " 'unsafe-hashes'" . $hashList;
+                }
             }
-        }
 
-        // Build CSP directive parts
-        $scriptSrc = "script-src 'self' https:{$sourcesList}{$nonceList}{$hashList}{$stripeAdjustments}";
-        $styleSrc = "style-src 'self' 'unsafe-inline' https:{$sourcesList}{$nonceList}{$styleHashList}";
-        
-        if ($this->config['strict_dynamic'] && !$hasStripe) {
-            // Only use strict-dynamic when Stripe is not present, as it can interfere
-            $scriptSrc .= " 'strict-dynamic'";
-        }
+            // Get inline style hashes
+            $styleHashes = $this->findInlineStyles($content);
+            $styleHashList = '';
+            if (!empty($styleHashes)) {
+                $styleHashList = " 'sha256-" . implode("' 'sha256-", $styleHashes) . "'";
+            }
 
-        // Build full CSP header
-        $cspParts = [
-            "default-src 'self'",
-            "base-uri 'self'{$sourcesList} data:",
-            "object-src 'none'",
-            $scriptSrc,
-            $styleSrc,
-            "img-src 'self' data: https:",
-            "font-src 'self' data: https:",
-            "connect-src 'self' https:",
-            "frame-ancestors 'self'"
-        ];
+            // Build nonce list
+            $nonceList = '';
+            if (!empty($this->nonces)) {
+                $nonceList = " 'nonce-" . implode("' 'nonce-", $this->nonces) . "'";
+            }
 
-        // Add Stripe-specific directives
-        if ($hasStripe && $this->config['enable_stripe']) {
-            // Allow Stripe frames for checkout
-            $cspParts[] = "frame-src 'self' https://checkout.stripe.com https://js.stripe.com https://hooks.stripe.com";
+            // Stripe-specific adjustments for script-src
+            // Modern Stripe.js (v3+) works with nonces and does NOT require
+            // 'unsafe-eval' or 'unsafe-inline'. Only the Stripe domains are needed.
+            $stripeScriptAdjustments = '';
+
+            // Build CSP directive parts
+            $unsafeEval = $this->config['allow_unsafe_eval'] ? " 'unsafe-eval'" : '';
+            $scriptSrc = "script-src 'self' https:{$allDomainsString}{$nonceList}{$hashList}{$unsafeEval}";
+
+            // Use nonces for styles; only fall back to unsafe-inline if explicitly opted in
+            if ($this->config['allow_unsafe_inline_styles']) {
+                $styleSrc = "style-src 'self' 'unsafe-inline' https:{$allDomainsString}";
+            } else {
+                $styleSrc = "style-src 'self' https:{$allDomainsString}{$nonceList}{$styleHashList}";
+            }
+            $fontSrc = "font-src 'self' data: https:{$fontDomainsString}";
             
-            // Allow form actions to Stripe
-            if ($this->config['allow_stripe_forms']) {
-                $cspParts[] = "form-action 'self' https://checkout.stripe.com";
+            // Don't use strict-dynamic with Stripe as it can cause issues
+            if ($this->config['strict_dynamic'] && !$hasStripe) {
+                $scriptSrc .= " 'strict-dynamic'";
+            }
+
+            // Prepare Stripe domains for connect-src
+            $stripeConnectDomains = '';
+            if ($hasStripe && $this->config['enable_stripe']) {
+                $stripeConnectDomains = ' ' . implode(' ', $this->stripeDomains);
+            }
+
+            // Build base CSP directives
+            $objectSrcValue = ($this->config['object_src'] === 'self') ? "'self'" : "'none'";
+            $cspParts = [
+                "default-src 'self'{$allDomainsString}",
+                "base-uri 'self'",
+                "object-src {$objectSrcValue}",
+                $scriptSrc,
+                $styleSrc,
+                "img-src 'self' data: https:{$allDomainsString}",
+                $fontSrc,
+                "connect-src 'self' https:{$stripeConnectDomains}{$allDomainsString}",
+                "frame-ancestors 'self'",
+            ];
+
+            // Add Stripe-specific directives
+            if ($hasStripe && $this->config['enable_stripe']) {
+                // Allow Stripe frames for checkout
+                $cspParts[] = "frame-src 'self' https://checkout.stripe.com https://js.stripe.com https://hooks.stripe.com{$allDomainsString}";
+                
+                // Allow form actions to Stripe (only if specifically enabled)
+                if ($this->config['allow_stripe_forms']) {
+                    $cspParts[] = "form-action 'self' https://checkout.stripe.com{$allDomainsString}";
+                }
+                
+                // Add child-src for older browser compatibility
+                $cspParts[] = "child-src 'self' https://checkout.stripe.com https://js.stripe.com";
+            }
+
+            // Add report URI if configured
+            if (!empty($this->config['report_uri'])) {
+                $reportUri = filter_var($this->config['report_uri'], FILTER_SANITIZE_URL);
+                if (filter_var($reportUri, FILTER_VALIDATE_URL)) {
+                    $cspParts[] = "report-uri {$reportUri}";
+                }
+            }
+
+            // Clean up any double spaces and build final header
+            $cspParts = array_map(function($part) {
+                return preg_replace('/\s+/', ' ', trim($part));
+            }, $cspParts);
+
+            $cspHeader = implode('; ', array_filter($cspParts));
+            
+            // Validate header length (some servers have limits)
+            if (strlen($cspHeader) > 8192) {
+                $this->modx->log(modX::LOG_LEVEL_WARN, 'CSP Security: CSP header is very long (' . strlen($cspHeader) . ' characters), this might cause issues');
             }
             
-            // Allow connections to all Stripe endpoints
-            $stripeConnects = implode(' ', $this->stripeDomains);
-            $cspParts[6] = "connect-src 'self' https: {$stripeConnects}"; // Update connect-src
-        }
-
-        // Add report URI if configured
-        if (!empty($this->config['report_uri'])) {
-            $reportUri = filter_var($this->config['report_uri'], FILTER_SANITIZE_URL);
-            if (filter_var($reportUri, FILTER_VALIDATE_URL)) {
-                $cspParts[] = "report-uri {$reportUri}";
+            // Set the header (use report-only mode for debugging if configured)
+            // $headerName = $this->config['report_only'] ? 'Content-Security-Policy-Report-Only' : 'Content-Security-Policy';
+            $headerName = 'Content-Security-Policy';
+            header("{$headerName}: {$cspHeader}");
+            
+            if ($this->config['debug_mode']) {
+                $debugInfo = "CSP Header" . ($hasStripe ? ' (Stripe enabled)' : '') . ": {$cspHeader}";
+                if (!empty($this->allowedDomains)) {
+                    $debugInfo .= "\nCustom domains included: " . implode(', ', $this->allowedDomains);
+                }
+                $debugInfo .= "\nHeader length: " . strlen($cspHeader) . " characters";
+                $this->modx->log(modX::LOG_LEVEL_INFO, $debugInfo);
             }
-        }
-
-        $cspHeader = implode('; ', $cspParts);
-        
-        // Set the header
-        header("Content-Security-Policy: {$cspHeader}");
-        
-        if ($this->config['debug_mode']) {
-            $this->modx->log(modX::LOG_LEVEL_INFO, "CSP Header" . ($hasStripe ? ' (Stripe enabled)' : '') . ": {$cspHeader}");
+            
+        } catch (Exception $e) {
+            $this->modx->log(modX::LOG_LEVEL_ERROR, 'CSP Security: Error setting CSP header: ' . $e->getMessage());
+            // Don't set any CSP header if there's an error to avoid 502
         }
     }
 
@@ -582,10 +703,16 @@ class CSPSecurityHandler
      */
     private function isValidDomain($domain)
     {
-        // Basic domain validation
-        if (preg_match('/^https?:\/\/[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}/', $domain)) {
+        // Basic domain validation - allow both full URLs and protocol-relative
+        if (preg_match('/^https?:\/\/[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]/', $domain)) {
             return true;
         }
+        
+        // Allow wildcard subdomains like *.example.com
+        if (preg_match('/^\*\.[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$/', $domain)) {
+            return true;
+        }
+        
         return false;
     }
 }
