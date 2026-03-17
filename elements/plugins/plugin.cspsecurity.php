@@ -78,7 +78,9 @@ class CSPSecurityHandler
             'allow_stripe_webhooks' => (bool) $this->modx->getOption('cspsecurity.allow_stripe_webhooks', null, false),
             'allow_unsafe_eval' => (bool) $this->modx->getOption('cspsecurity.allow_unsafe_eval', null, false),
             'allow_unsafe_inline_styles' => (bool) $this->modx->getOption('cspsecurity.allow_unsafe_inline_styles', null, false),
-            'object_src' => $this->modx->getOption('cspsecurity.object_src', null, 'none') // 'none' or 'self'
+            'object_src' => $this->modx->getOption('cspsecurity.object_src', null, 'none'), // 'none' or 'self'
+            'custom_style_hashes' => $this->modx->getOption('cspsecurity.custom_style_hashes', null, ''),
+            'custom_script_hashes' => $this->modx->getOption('cspsecurity.custom_script_hashes', null, '')
         ];
         
         // Parse custom domains
@@ -377,6 +379,39 @@ class CSPSecurityHandler
     }
 
     /**
+     * Parse comma-separated CSP hashes from a system setting value.
+     * Accepts formats: 'sha256-abc123', sha256-abc123
+     * Returns array of quoted hash tokens ready for CSP header, e.g. ["'sha256-abc123'"]
+     * 
+     * @param string $raw
+     * @return array
+     */
+    private function parseCustomHashes($raw)
+    {
+        if (empty($raw)) {
+            return [];
+        }
+
+        $hashes = [];
+        $tokens = array_map('trim', explode(',', $raw));
+        foreach ($tokens as $token) {
+            // Strip surrounding quotes if present
+            $token = trim($token, " \t\n\r\0\x0B'\"");
+            if (empty($token)) {
+                continue;
+            }
+            // Validate format: sha256-<base64>, sha384-..., sha512-...
+            if (preg_match('/^sha(256|384|512)-[A-Za-z0-9+\/=_-]+$/', $token)) {
+                $hashes[] = "'{$token}'";
+            } elseif ($this->config['debug_mode']) {
+                $this->modx->log(modX::LOG_LEVEL_WARN, "CSP Security: Ignoring invalid custom hash: {$token}");
+            }
+        }
+
+        return array_unique($hashes);
+    }
+
+    /**
      * Search for inline event handlers and create SHA256 hashes
      * 
      * @param string $content
@@ -426,15 +461,15 @@ class CSPSecurityHandler
             }
         }
         
-        // Match style attributes
-        // if (preg_match_all('/style="([^"]+)"/i', $content, $matches)) {
-        //     foreach ($matches[1] as $styleContent) {
-        //         if (!empty($styleContent)) {
-        //             $hash = base64_encode(hash('sha256', trim($styleContent), true));
-        //             $hashes[] = $hash;
-        //         }
-        //     }
-        // }
+        // Match inline style attributes (e.g. style="margin-left:5.33333%")
+        if (preg_match_all('/style="([^"]+)"/i', $content, $matches)) {
+            foreach ($matches[1] as $styleContent) {
+                if (!empty($styleContent)) {
+                    $hash = base64_encode(hash('sha256', trim($styleContent), true));
+                    $hashes[] = $hash;
+                }
+            }
+        }
         
         return array_unique($hashes);
     }
@@ -586,11 +621,18 @@ class CSPSecurityHandler
                 }
             }
 
-            // Get inline style hashes
+            // Get inline style hashes (covers <style> tags and style="..." attributes)
             $styleHashes = $this->findInlineStyles($content);
+            // Merge custom style hashes from system setting (comma-separated 'sha256-...' values)
+            $customStyleHashes = $this->parseCustomHashes($this->config['custom_style_hashes']);
             $styleHashList = '';
-            if (!empty($styleHashes)) {
-                $styleHashList = " 'sha256-" . implode("' 'sha256-", $styleHashes) . "'";
+            $allStyleHashes = array_merge(
+                array_map(function($h) { return "'sha256-{$h}'"; }, $styleHashes),
+                $customStyleHashes
+            );
+            if (!empty($allStyleHashes)) {
+                // 'unsafe-hashes' is required by the CSP spec to allow hashed inline style attributes
+                $styleHashList = " 'unsafe-hashes' " . implode(' ', $allStyleHashes);
             }
 
             // Build nonce list
@@ -604,9 +646,13 @@ class CSPSecurityHandler
             // 'unsafe-eval' or 'unsafe-inline'. Only the Stripe domains are needed.
             $stripeScriptAdjustments = '';
 
+            // Merge custom script hashes from system setting (comma-separated 'sha256-...' values)
+            $customScriptHashes = $this->parseCustomHashes($this->config['custom_script_hashes']);
+            $customScriptHashList = empty($customScriptHashes) ? '' : ' ' . implode(' ', $customScriptHashes);
+
             // Build CSP directive parts
             $unsafeEval = $this->config['allow_unsafe_eval'] ? " 'unsafe-eval'" : '';
-            $scriptSrc = "script-src 'self' https:{$allDomainsString}{$nonceList}{$hashList}{$unsafeEval}";
+            $scriptSrc = "script-src 'self' https:{$allDomainsString}{$nonceList}{$hashList}{$customScriptHashList}{$unsafeEval}";
 
             // Use nonces for styles; only fall back to unsafe-inline if explicitly opted in
             if ($this->config['allow_unsafe_inline_styles']) {
@@ -656,10 +702,16 @@ class CSPSecurityHandler
             }
 
             // Add report URI if configured
-            if (!empty($this->config['report_uri'])) {
-                $reportUri = filter_var($this->config['report_uri'], FILTER_SANITIZE_URL);
-                if (filter_var($reportUri, FILTER_VALIDATE_URL)) {
+            $rawReportUri = $this->config['report_uri'];
+            if (!empty($rawReportUri)) {
+                $reportUri = trim($rawReportUri);
+                // Accept full URLs or absolute paths (starting with /)
+                if (filter_var($reportUri, FILTER_VALIDATE_URL) ||
+                    (strpos($reportUri, '/') === 0 && preg_match('#^/[a-zA-Z0-9/_.\-]+$#', $reportUri))
+                ) {
                     $cspParts[] = "report-uri {$reportUri}";
+                } else {
+                    $this->modx->log(modX::LOG_LEVEL_WARN, "CSP Security: Invalid report_uri value: '{$reportUri}'");
                 }
             }
 

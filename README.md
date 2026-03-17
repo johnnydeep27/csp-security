@@ -9,6 +9,7 @@ A CSP header generator that automatically generates secure nonces on `<style>` a
 - Add custom domains (comma-separated), including wildcard subdomains (`*.example.com`)
 - Automatic detection of common CDN and font domains
 - SHA-256 hashing for inline event handlers (`onclick`, `onload`, `oninvalid`, `oninput`, etc.)
+- SHA-256 hashing for inline `style="…"` attributes with `'unsafe-hashes'` — no `'unsafe-inline'` needed
 - `style-src` secured with nonces by default (opt-in `'unsafe-inline'` via setting)
 - `font-src` scoped to detected font domains instead of blanket `https:`
 - CSP header length validation with warning logging
@@ -46,6 +47,8 @@ A CSP header generator that automatically generates secure nonces on `<style>` a
 | `cspsecurity.allow_unsafe_eval` | `false` | Add `'unsafe-eval'` to `script-src` |
 | `cspsecurity.allow_unsafe_inline_styles` | `false` | Use `'unsafe-inline'` instead of nonces for `style-src` |
 | `cspsecurity.object_src` | `none` | Set `object-src` directive value (`none` or `self`) |
+| `cspsecurity.custom_style_hashes` | | Comma-separated hashes for `style-src` (e.g. `sha256-abc123,sha256-xyz789`) |
+| `cspsecurity.custom_script_hashes` | | Comma-separated hashes for `script-src` (e.g. `sha256-abc123`) |
 | `cspsecurity.enable_stripe` | `false` | Enable Stripe-specific CSP rules |
 | `cspsecurity.stripe_environment` | `live` | Stripe environment (`live` / `test`) |
 | `cspsecurity.allow_stripe_forms` | `true` | Allow `form-action` to Stripe Checkout |

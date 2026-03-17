@@ -14,6 +14,8 @@
     - `allow_unsafe_eval` — Explicitly opt in to `'unsafe-eval'` in `script-src` when required
     - `allow_unsafe_inline_styles` — Explicitly opt in to `'unsafe-inline'` in `style-src` when required
     - `object_src` — Set `object-src` directive value (`'none'` or `'self'`); defaults to `'none'`
+    - `custom_style_hashes` — Comma-separated SHA-256/384/512 hashes to add to `style-src` (paste values from browser console)
+    - `custom_script_hashes` — Comma-separated SHA-256/384/512 hashes to add to `script-src`
 - **Font domain detection** — New `$commonFontDomains` list and `getFontDomains()` method; `font-src` now uses specific detected domains instead of a blanket `https:`
 - **Centralised domain collection** — New `getAllAllowedDomains()` method; custom domains now propagate to `default-src`, `img-src`, `connect-src`, `frame-src`, and `form-action`
 - **Wildcard subdomain support** — `isValidDomain()` now accepts `*.example.com` patterns in `custom_domains`
@@ -27,7 +29,7 @@
 - **Double-space cleanup** — All CSP directive parts are trimmed before joining
 - **Error handling improved** — `process()` catches both `Exception` and `Error`; `setCSPHeader()` wrapped in try/catch to prevent 502 errors
 - **Debug logging enhanced** — Logs loaded custom domains on startup and CSP header length on each request
-- **Style attribute hashing disabled** — Inline `style="…"` attribute hashing removed to reduce header bloat; `<style>` tag hashing retained
+- **Style attribute hashing re-enabled** — Inline `style="…"` attributes are now SHA-256 hashed with `'unsafe-hashes'` in `style-src`, allowing them without `'unsafe-inline'`
 
 ## 1.1.0 - 2025-05-25
 
