@@ -14,6 +14,7 @@ A CSP header generator that automatically generates secure nonces on `<style>` a
 - `font-src` scoped to detected font domains instead of blanket `https:`
 - CSP header length validation with warning logging
 - Robust error handling to prevent 502 errors
+- `form-action` and `frame-src` always defined (no fallback to `default-src` per CSP spec)
 
 ## Stripe Payment Compatibility (v1.1.0+)
 - Automatic Stripe Detection
@@ -27,8 +28,8 @@ A CSP header generator that automatically generates secure nonces on `<style>` a
 - Stripe Domain Whitelist
     - Automatically includes all necessary Stripe domains (`js.stripe.com`, `checkout.stripe.com`, etc.)
 - Smart CSP Adjustments
-    - Includes `frame-src` and `child-src` for Stripe Checkout iframes
-    - Adds `form-action` for payment form submissions
+    - Extends `frame-src` and `child-src` with Stripe Checkout domains
+    - Extends `form-action` with Stripe Checkout domain
     - Temporarily disables `strict-dynamic` when Stripe is present to prevent conflicts
     - Preserves existing Stripe script nonces
     - No longer forces `'unsafe-eval'` or `'unsafe-inline'` — modern Stripe.js v3+ works with nonces

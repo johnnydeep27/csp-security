@@ -684,16 +684,25 @@ class CSPSecurityHandler
                 "img-src 'self' data: https:{$allDomainsString}",
                 $fontSrc,
                 "connect-src 'self' https:{$stripeConnectDomains}{$allDomainsString}",
+                "form-action 'self'{$allDomainsString}",
+                "frame-src 'self'{$allDomainsString}",
                 "frame-ancestors 'self'",
             ];
 
             // Add Stripe-specific directives
             if ($hasStripe && $this->config['enable_stripe']) {
-                // Allow Stripe frames for checkout
+                // Override frame-src with Stripe domains
+                // Remove the default frame-src and add Stripe-specific one
+                $cspParts = array_filter($cspParts, function($part) {
+                    return strpos($part, 'frame-src') !== 0;
+                });
                 $cspParts[] = "frame-src 'self' https://checkout.stripe.com https://js.stripe.com https://hooks.stripe.com{$allDomainsString}";
                 
-                // Allow form actions to Stripe (only if specifically enabled)
+                // Override form-action with Stripe checkout
                 if ($this->config['allow_stripe_forms']) {
+                    $cspParts = array_filter($cspParts, function($part) {
+                        return strpos($part, 'form-action') !== 0;
+                    });
                     $cspParts[] = "form-action 'self' https://checkout.stripe.com{$allDomainsString}";
                 }
                 

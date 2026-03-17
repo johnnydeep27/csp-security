@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.1 - 2026-03-17
+
+### Bug Fixes
+
+- **Fixed `report-uri` not appearing in CSP header** — Config key was referenced with `cspsecurity.` prefix but stored without it; also removed `FILTER_SANITIZE_URL` that was mangling path-based values
+- **Added `form-action` directive to all pages** — Previously only defined when Stripe was enabled; `form-action` does not fall back to `default-src`, so its absence left forms unrestricted (OWASP ZAP: "CSP: Failure to Define Directive with No Fallback")
+- **Added `frame-src` directive to all pages** — Same no-fallback issue; now defaults to `'self'` plus custom domains, upgraded with Stripe domains when Stripe is active
+- Simplified `report-uri` validation to accept full URLs and absolute paths without intermediate sanitisation
+- Invalid `report-uri` values are now always logged (not only in debug mode)
+
 ## 1.2.0 - 2026-02-16
 
 ### Security
